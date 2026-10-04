@@ -1,19 +1,20 @@
+[README (1).md](https://github.com/user-attachments/files/33030163/README.1.md)
 <div align="center">
 
 # Terraform AWS Tech News AI Agent
 
-### A reusable serverless Terraform template for curating and delivering AI-summarized technology news
+### A reusable serverless reference implementation for curating and delivering AI-summarized technology news
 
 [![Terraform](https://img.shields.io/badge/Terraform-1.6%2B-7B42BC?logo=terraform&logoColor=white)](https://www.terraform.io/)
 [![AWS](https://img.shields.io/badge/AWS-Serverless-FF9900?logo=amazonaws&logoColor=white)](https://aws.amazon.com/)
 [![Python](https://img.shields.io/badge/Lambda-Python-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Amazon Bedrock](https://img.shields.io/badge/Amazon%20Bedrock-Generative%20AI-232F3E)](https://aws.amazon.com/bedrock/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Template](https://img.shields.io/badge/Type-Reusable%20Template-blue)](#)
+[![Template](https://img.shields.io/badge/Type-Reusable%20Reference-blue)](#)
 
 **EventBridge Scheduler → Lambda → DynamoDB → Amazon Bedrock → Slack**
 
-A public-reference Terraform module for building a lightweight AI agent that gathers technology content, filters duplicate stories, uses a foundation model for curation and summarization, and delivers a daily digest to Slack.
+A public-reference Terraform module and Python Lambda implementation for collecting configured technology feeds, filtering previously processed stories, curating a concise digest with Amazon Bedrock, and delivering it to Slack.
 
 </div>
 
@@ -23,11 +24,11 @@ A public-reference Terraform module for building a lightweight AI agent that gat
 
 Keeping up with technology is increasingly an **information filtering problem** rather than an information access problem.
 
-This module provides the infrastructure foundation for a small AI agent that can automate the repetitive part of that workflow: collect new content, eliminate stories it has already seen, summarize what matters, and deliver a concise digest to a channel you already use.
+This repository demonstrates one small, practical AI-agent workflow: collect recent content, remove stories already considered, ask a foundation model to rank and summarize the useful items, and deliver the resulting brief to a channel you already use.
 
-The module intentionally keeps content sources generic. It is designed as a reusable reference architecture rather than an integration tied to any particular publisher.
+The implementation intentionally keeps content sources, model selection, AWS region, schedule, interests, and destination details configurable. No publisher-specific feeds, personal identifiers, AWS account identifiers, or webhook values are included in the repository.
 
-> **Reference template:** this repository provisions the AWS infrastructure. The article-fetching, parsing, prompting, summarization, and Slack formatting logic lives in your Lambda application package.
+> **Reference implementation:** use sources you are authorized to consume and review their API, RSS, licensing, and usage requirements before deployment. The included Lambda reads RSS/Atom metadata and does not scrape full article bodies.
 
 ## Architecture
 
@@ -37,175 +38,28 @@ The module intentionally keeps content sources generic. It is designed as a reus
 
 ### Request flow
 
-1. **Amazon EventBridge Scheduler** triggers the workflow on a recurring schedule.
-2. **AWS Lambda** runs the Python AI-agent workload.
-3. The agent retrieves its Slack webhook from **AWS Secrets Manager**.
-4. New content is checked against **Amazon DynamoDB** to prevent duplicate processing.
-5. Relevant articles are sent to **Amazon Bedrock** for curation and summarization.
-6. Newly processed article fingerprints are written back to DynamoDB with **TTL enabled**.
-7. The curated digest is delivered to a **Slack channel**.
-8. Execution logs, metrics, and alarms are handled through **Amazon CloudWatch**.
+1. **Amazon EventBridge Scheduler** invokes the workflow on a configurable schedule and timezone.
+2. **AWS Lambda** runs the bundled Python reference agent.
+3. The agent retrieves its destination webhook from **AWS Secrets Manager**.
+4. Configured RSS/Atom feeds are fetched over HTTPS.
+5. Candidate stories are checked against **Amazon DynamoDB** to prevent repeated processing.
+6. Unseen candidates are sent to **Amazon Bedrock** for curation and summarization.
+7. The digest is delivered to **Slack**.
+8. Candidate fingerprints are stored in DynamoDB with **TTL enabled** after a successful delivery.
+9. **Amazon CloudWatch** receives Lambda logs and native execution metrics.
 
 ## What this module creates
 
 | Component | Purpose |
 |---|---|
-| EventBridge Scheduler | Runs the agent on a configurable schedule and timezone |
-| AWS Lambda | Hosts the Python AI-agent workload |
-| DynamoDB | Stores article fingerprints for deduplication |
+| EventBridge Scheduler | Runs the agent on a configurable schedule and IANA timezone |
+| AWS Lambda | Hosts the Python reference agent |
+| DynamoDB | Stores hashed article identifiers for deduplication |
 | DynamoDB TTL | Automatically expires stale dedupe records |
-| Secrets Manager | Stores the Slack webhook securely |
+| Secrets Manager | Stores the destination webhook outside the code and Terraform variables |
 | IAM roles and policies | Grants scoped service-to-service permissions |
-| CloudWatch Logs | Captures Lambda execution logs |
-| CloudWatch alarm | Monitors Lambda errors |
-| Amazon Bedrock permissions | Allows invocation of explicitly configured models or inference profiles |
-
-## Design goals
-
-- **Reusable** — no publisher-specific configuration is baked into the module.
-- **Serverless** — no always-on compute is required.
-- **Low operational overhead** — managed AWS services handle scheduling, storage, secrets, and observability.
-- **Least privilege by default** — permissions are scoped to the resources created or supplied to the module.
-- **Safe for a public reference repo** — secret values are not committed or passed as normal Terraform variables.
-- **Timezone aware** — EventBridge Scheduler uses an IANA timezone instead of forcing UTC conversions.
-- **Extensible** — additional Lambda IAM statements and environment variables can be supplied when needed.
-
-## Quick start
-
-```hcl
-provider "aws" {
-  region = "us-east-2"
-}
-
-module "tech_news_agent" {
-  source = "../../"
-
-  name                = "tech-news"
-  lambda_package_path = "${path.module}/lambda.zip"
-
-  bedrock_model_id = "your-bedrock-model-or-inference-profile-id"
-  bedrock_model_arns = [
-    "arn:aws:bedrock:us-east-2:123456789012:inference-profile/example-profile"
-  ]
-
-  news_sources = [
-    "https://example.com/technology/rss",
-    "https://example.org/security/feed"
-  ]
-
-  schedule_expression = "cron(30 8 * * ? *)"
-  schedule_timezone   = "America/Toronto"
-
-  tags = {
-    Environment = "demo"
-    Project     = "tech-news-agent"
-  }
-}
-```
-
-Then initialize and validate the module:
-
-```bash
-terraform init
-terraform fmt -recursive
-terraform validate
-terraform plan
-```
-
-## Slack webhook handling
-
-By default, Terraform creates the **Secrets Manager secret metadata only**. The actual webhook value should be inserted separately so the plaintext webhook is not intentionally placed into Terraform configuration or state.
-
-```bash
-aws secretsmanager put-secret-value \
-  --secret-id tech-news/slack-webhook \
-  --secret-string '{"webhook_url":"https://hooks.slack.com/services/REPLACE_ME"}'
-```
-
-The Lambda application can then retrieve the secret at runtime and read the `webhook_url` property.
-
-## Lambda environment variables
-
-The module injects the following values into the function:
-
-| Variable | Purpose |
-|---|---|
-| `DEDUPE_TABLE_NAME` | DynamoDB table containing article fingerprints |
-| `DEDUPE_TTL_SECONDS` | Retention period for dedupe entries |
-| `SLACK_SECRET_ARN` | Secrets Manager ARN containing the Slack webhook |
-| `BEDROCK_MODEL_ID` | Bedrock model or inference-profile identifier |
-| `NEWS_SOURCES_JSON` | JSON array of configured content sources |
-| `LOG_LEVEL` | Application logging level |
-
-Additional environment variables can be supplied using `lambda_environment_variables`.
-
-## Deduplication model
-
-A simple DynamoDB item can look like this:
-
-```json
-{
-  "article_id": "sha256-of-canonical-url-or-content",
-  "expires_at": 1791000000
-}
-```
-
-`expires_at` must be a Unix epoch timestamp in seconds. DynamoDB TTL automatically removes stale fingerprints after they are no longer needed.
-
-A canonical URL, normalized article identifier, or content hash can be used as `article_id` depending on the application logic.
-
-## Scheduling
-
-The default example runs every morning at 8:30:
-
-```text
-cron(30 8 * * ? *)
-```
-
-with:
-
-```text
-America/Toronto
-```
-
-Because EventBridge Scheduler supports IANA timezones, the schedule can remain aligned to local wall-clock time across daylight-saving changes.
-
-## Security model
-
-The module keeps permissions deliberately narrow:
-
-- Lambda receives `secretsmanager:GetSecretValue` only for the configured Slack secret.
-- DynamoDB permissions are scoped to the dedupe table.
-- Bedrock invocation is scoped to model or inference-profile ARNs supplied by the caller.
-- EventBridge Scheduler uses a dedicated role that can invoke only the module's Lambda function.
-- DynamoDB server-side encryption is enabled.
-- Optional customer-managed KMS keys can be supplied for Secrets Manager and CloudWatch Logs.
-- The Slack webhook value is not required as a normal Terraform input.
-
-The default Bedrock permissions are:
-
-```text
-bedrock:InvokeModel
-bedrock:InvokeModelWithResponseStream
-```
-
-If the application later uses Guardrails, Knowledge Bases, Agents, or other Bedrock APIs, additional permissions can be added with `additional_lambda_policy_statements`.
-
-## Application responsibilities
-
-This Terraform module intentionally stops at infrastructure provisioning. Your Lambda package remains responsible for:
-
-- fetching configured content sources;
-- parsing feeds or web responses;
-- normalizing article URLs or identifiers;
-- calculating deduplication fingerprints;
-- constructing prompts;
-- calling Amazon Bedrock;
-- formatting the final digest;
-- posting the digest to Slack;
-- handling application-level retries and filtering logic.
-
-This separation keeps the infrastructure module reusable even if the agent implementation changes later.
+| CloudWatch Logs | Captures Lambda application and execution logs |
+| Amazon Bedrock permissions | Allows invocation of explicitly supplied model or inference-profile ARNs |
 
 ## Repository layout
 
@@ -218,6 +72,8 @@ terraform-aws-tech-news-agent/
 ├── README.md
 ├── LICENSE
 ├── .gitignore
+├── src/
+│   └── handler.py
 ├── docs/
 │   └── architecture.png
 └── examples/
@@ -225,18 +81,250 @@ terraform-aws-tech-news-agent/
         └── main.tf
 ```
 
+## Design goals
+
+- **Generic by default** — content sources and environment-specific values are inputs, not hard-coded implementation details.
+- **Runnable reference code** — the repository now includes a small Python Lambda implementation rather than infrastructure alone.
+- **Serverless** — no always-on compute is required.
+- **Least privilege** — the Lambda can read one secret, access one DynamoDB table, invoke only supplied Bedrock resources, and write to its log group.
+- **Secret-safe** — Terraform manages secret metadata, not the webhook value.
+- **Timezone aware** — EventBridge Scheduler supports configurable IANA timezones.
+- **Low dependency** — the Lambda uses the Python standard library plus the AWS SDK available in the Lambda runtime.
+- **Extensible** — callers can override the Lambda ZIP, add environment variables, or add narrowly scoped IAM statements.
+
+## Quick start
+
+The included example requires your AWS region, Bedrock identifiers, and content sources as inputs instead of embedding example account IDs or real publishers.
+
+```hcl
+provider "aws" {
+  region = var.aws_region
+}
+
+module "tech_news_agent" {
+  source = "../../"
+
+  name = "tech-news"
+
+  bedrock_model_id   = var.bedrock_model_id
+  bedrock_model_arns = var.bedrock_model_arns
+  content_sources    = var.content_sources
+
+  schedule_expression = "cron(30 8 * * ? *)"
+  schedule_timezone   = "Etc/UTC"
+}
+```
+
+A content source uses this shape:
+
+```hcl
+content_sources = [
+  {
+    name = "Example technology feed"
+    url  = "https://example.com/feed.xml"
+    kind = "feed"
+  }
+]
+```
+
+The names and URLs above are placeholders only. Configure feeds you are permitted to consume.
+
+Then initialize and validate:
+
+```bash
+terraform init
+terraform fmt -recursive
+terraform validate
+terraform plan
+```
+
+## Lambda packaging
+
+By default, the module packages the bundled `src/` directory with the Terraform `archive` provider and deploys it to Lambda.
+
+If you want to use your own implementation instead, provide a pre-built ZIP:
+
+```hcl
+lambda_package_path = "/path/to/your/lambda.zip"
+```
+
+The default handler is:
+
+```text
+handler.lambda_handler
+```
+
+## Content source configuration
+
+The reference Lambda expects RSS or Atom feeds over HTTPS. Each source has a display name, URL, and optional descriptive kind.
+
+```hcl
+content_sources = [
+  {
+    name = "Example vendor updates"
+    url  = "https://example.com/updates.xml"
+    kind = "official"
+  },
+  {
+    name = "Example industry feed"
+    url  = "https://example.org/feed.xml"
+    kind = "feed"
+  }
+]
+```
+
+The `kind` field is informational context supplied to the model. It does not grant trust or change network permissions.
+
+## Curation controls
+
+Useful behavior can be adjusted without changing the Python code:
+
+```hcl
+interests      = "cloud computing, security, software engineering, AI, and emerging technology"
+top_n          = 10
+lookback_hours = 24
+dedupe_ttl_days = 14
+digest_title   = "Tech brief"
+```
+
+The Lambda only gives Bedrock the feed-provided title and short summary for each candidate. The prompt instructs the model not to invent details beyond that supplied metadata.
+
+## Deduplication model
+
+URLs are canonicalized and hashed before being stored as DynamoDB keys. A stored record looks conceptually like:
+
+```json
+{
+  "article_id": "sha256-of-canonical-url",
+  "expires_at": 1791000000
+}
+```
+
+The raw URL does not need to be stored in the dedupe table.
+
+After a digest is successfully posted, the agent marks **all unseen candidates supplied to the model** as processed, not only the stories selected for the final digest. This prevents the same unselected candidates from consuming model input on every run.
+
+## Slack webhook handling
+
+Terraform creates the **Secrets Manager secret metadata only** by default. Populate the value separately so the webhook is not intentionally written into Terraform configuration or state.
+
+The bundled Lambda accepts either:
+
+```json
+{
+  "webhook_url": "https://your-webhook-endpoint.example/path"
+}
+```
+
+or a raw HTTPS webhook URL as the secret string.
+
+A generic CLI pattern is:
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id <secret-name-or-arn> \
+  --secret-string '{"webhook_url":"https://your-webhook-endpoint.example/path"}'
+```
+
+Do not commit the actual webhook value to Git.
+
+## Lambda environment variables
+
+Terraform supplies the reference application with:
+
+| Variable | Purpose |
+|---|---|
+| `TABLE_NAME` | DynamoDB deduplication table |
+| `SLACK_SECRET_ID` | Secrets Manager secret name/ARN containing the webhook |
+| `MODEL_ID` | Bedrock model or inference-profile identifier |
+| `CONTENT_SOURCES_JSON` | JSON representation of configured RSS/Atom sources |
+| `INTERESTS` | Topics used to rank candidate stories |
+| `TOP_N` | Maximum stories requested for the digest |
+| `LOOKBACK_HOURS` | Candidate publication-time window |
+| `TTL_DAYS` | Deduplication retention period |
+| `DIGEST_TITLE` | Heading for the Slack digest |
+| `LOG_LEVEL` | Python logging level |
+
+Additional environment variables can be supplied with `lambda_environment_variables`.
+
+## Bedrock model access
+
+The model identifier and IAM resources are intentionally separate inputs:
+
+```hcl
+bedrock_model_id   = var.bedrock_model_id
+bedrock_model_arns = var.bedrock_model_arns
+```
+
+This allows the caller to use a supported Bedrock model or inference profile without hard-coding a particular model version in the repository.
+
+For inference profiles, supply every Bedrock resource ARN required by the invocation path. The module grants only:
+
+```text
+bedrock:InvokeModel
+```
+
+by default.
+
+## Security model
+
+The reference IAM policy is deliberately narrower than a manually prototyped environment may be:
+
+- `secretsmanager:GetSecretValue` is scoped to the configured webhook secret.
+- DynamoDB access is limited to `BatchGetItem` and `BatchWriteItem` on the dedupe table.
+- Bedrock access is limited to `InvokeModel` on caller-supplied ARNs.
+- EventBridge Scheduler uses a dedicated role that can invoke only this Lambda function.
+- Lambda log permissions are limited to its CloudWatch log group.
+- Optional KMS keys can be supplied for Secrets Manager and CloudWatch Logs.
+- No AWS-managed `FullAccess` policies are required by the reference implementation.
+
+If a custom Lambda implementation needs additional AWS APIs, add only the required actions with `additional_lambda_policy_statements`.
+
+## Observability
+
+The module creates a CloudWatch log group with configurable retention. Lambda also publishes its standard execution metrics to CloudWatch automatically.
+
+A CloudWatch alarm is **not** created by this reference module. Teams that need paging, dashboards, anomaly detection, or service-level alerting can add those controls according to their own operational requirements.
+
+## Scheduling
+
+The default schedule expression is:
+
+```text
+cron(30 8 * * ? *)
+```
+
+and the default timezone is:
+
+```text
+Etc/UTC
+```
+
+Override `schedule_timezone` with the IANA timezone appropriate for your deployment if you want a stable local wall-clock time across daylight-saving changes.
+
+## Manual source check
+
+You can invoke the Lambda manually with this test event to validate configured feeds without sending a Slack digest:
+
+```json
+{
+  "check_sources": true
+}
+```
+
+The response reports only source names, status, entry counts, and error types. It does not return secrets.
+
 ## Production hardening ideas
 
-For a production deployment, you may want to extend the reference implementation with:
+This repository is intentionally small. Depending on your requirements, you may want to add:
 
 - an SQS dead-letter queue;
 - structured JSON logging;
-- CloudWatch dashboards;
-- additional alarms and anomaly detection;
-- explicit Lambda code-signing or artifact controls;
-- VPC connectivity where private resources are required;
+- CloudWatch dashboards or alarms;
+- Lambda code signing or artifact controls;
+- VPC connectivity for private dependencies;
 - Bedrock Guardrails;
-- more advanced content reputation and filtering logic;
+- source allow-list governance or content reputation controls;
 - CI checks such as `terraform fmt`, `terraform validate`, `tflint`, and security scanning.
 
 ## Requirements
@@ -245,7 +333,8 @@ For a production deployment, you may want to extend the reference implementation
 |---|---|
 | Terraform | `>= 1.6` |
 | AWS provider | `>= 6.0` |
-| Lambda artifact | ZIP package built separately |
+| Archive provider | `>= 2.4` |
+| Lambda runtime | Python 3.13 by default |
 | Amazon Bedrock | Model access configured in the deployment region |
 | AWS credentials | Permissions to create the resources used by this module |
 
@@ -253,7 +342,7 @@ For a production deployment, you may want to extend the reference implementation
 
 Released under the [MIT License](LICENSE).
 
-This makes the template easy to reuse, modify, fork, and build on while preserving the standard MIT copyright and warranty notice.
+This makes the reference implementation easy to reuse, modify, fork, and build on while preserving the standard MIT copyright and warranty notice.
 
 ---
 
