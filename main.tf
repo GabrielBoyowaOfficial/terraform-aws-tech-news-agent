@@ -7,7 +7,14 @@ locals {
   table_name    = substr("${var.name}-dedupe", 0, 255)
   secret_name   = coalesce(var.slack_secret_name, "${var.name}/slack-webhook")
 
-  slack_secret_arn = var.create_slack_secret ? aws_secretsmanager_secret.slack_webhook[0].arn : coalesce(var.slack_secret_arn, "arn:${data.aws_partition.current.partition}:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:invalid")
+  slack_secret_arn = var.create_slack_secret ? aws_secretsmanager_secret.slack_webhook[0].arn : coalesce(
+    var.slack_secret_arn,
+    "arn:${data.aws_partition.current.partition}:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:invalid"
+  )
+
+  bundled_lambda_zip = "${path.root}/.terraform/${local.function_name}.zip"
+  lambda_package_path = var.lambda_package_path != null ? var.lambda_package_path : data.archive_file.lambda[0].output_path
+  lambda_source_hash = var.lambda_package_path != null ? filebase64sha256(var.lambda_package_path) : data.archive_file.lambda[0].output_base64sha256
 
   common_tags = merge(
     {
@@ -16,6 +23,14 @@ locals {
     },
     var.tags
   )
+}
+
+data "archive_file" "lambda" {
+  count = var.lambda_package_path == null ? 1 : 0
+
+  type        = "zip"
+  source_dir  = "${path.module}/src"
+  output_path = local.bundled_lambda_zip
 }
 
 resource "aws_dynamodb_table" "dedupe" {
@@ -50,7 +65,7 @@ resource "aws_secretsmanager_secret" "slack_webhook" {
   name                    = local.secret_name
   description             = "Slack webhook used by the tech news AI agent"
   recovery_window_in_days = var.secret_recovery_window_days
-  kms_key_id              = var.secret_kms_key_id
+  kms_key_id              = var.secret_kms_key_arn
 
   tags = local.common_tags
 }
@@ -94,22 +109,18 @@ data "aws_iam_policy_document" "lambda" {
   }
 
   statement {
-    sid    = "ReadSlackWebhookSecret"
-    effect = "Allow"
-    actions = [
-      "secretsmanager:GetSecretValue"
+    sid     = "ReadSlackWebhookSecret"
+    effect  = "Allow"
+    actions = ["secretsmanager:GetSecretValue"]
+    resources = [
+      local.slack_secret_arn
     ]
-    resources = [local.slack_secret_arn]
   }
 
   statement {
     sid    = "UseDedupeTable"
     effect = "Allow"
     actions = [
-      "dynamodb:GetItem",
-      "dynamodb:PutItem",
-      "dynamodb:UpdateItem",
-      "dynamodb:DeleteItem",
       "dynamodb:BatchGetItem",
       "dynamodb:BatchWriteItem"
     ]
@@ -117,22 +128,20 @@ data "aws_iam_policy_document" "lambda" {
   }
 
   statement {
-    sid    = "InvokeBedrockModel"
-    effect = "Allow"
-    actions = [
-      "bedrock:InvokeModel",
-      "bedrock:InvokeModelWithResponseStream"
-    ]
+    sid     = "InvokeBedrockModel"
+    effect  = "Allow"
+    actions = ["bedrock:InvokeModel"]
     resources = var.bedrock_model_arns
   }
 
   dynamic "statement" {
-    for_each = var.secret_kms_key_id != null ? [1] : []
+    for_each = var.secret_kms_key_arn != null ? [1] : []
+
     content {
       sid       = "DecryptSlackSecret"
       effect    = "Allow"
       actions   = ["kms:Decrypt"]
-      resources = [var.secret_kms_key_id]
+      resources = [var.secret_kms_key_arn]
     }
   }
 
@@ -160,8 +169,8 @@ resource "aws_lambda_function" "this" {
   description   = var.lambda_description
   role          = aws_iam_role.lambda.arn
 
-  filename         = var.lambda_package_path
-  source_code_hash = filebase64sha256(var.lambda_package_path)
+  filename         = local.lambda_package_path
+  source_code_hash = local.lambda_source_hash
   handler          = var.lambda_handler
   runtime          = var.lambda_runtime
   architectures    = [var.lambda_architecture]
@@ -174,12 +183,16 @@ resource "aws_lambda_function" "this" {
   environment {
     variables = merge(
       {
-        DEDUPE_TABLE_NAME   = aws_dynamodb_table.dedupe.name
-        DEDUPE_TTL_SECONDS  = tostring(var.dedupe_ttl_seconds)
-        SLACK_SECRET_ARN    = local.slack_secret_arn
-        BEDROCK_MODEL_ID    = var.bedrock_model_id
-        NEWS_SOURCES_JSON   = jsonencode(var.news_sources)
-        LOG_LEVEL           = var.log_level
+        TABLE_NAME           = aws_dynamodb_table.dedupe.name
+        SLACK_SECRET_ID      = local.slack_secret_arn
+        MODEL_ID             = var.bedrock_model_id
+        CONTENT_SOURCES_JSON = jsonencode(var.content_sources)
+        INTERESTS            = var.interests
+        TOP_N                = tostring(var.top_n)
+        LOOKBACK_HOURS       = tostring(var.lookback_hours)
+        TTL_DAYS             = tostring(var.dedupe_ttl_days)
+        DIGEST_TITLE         = var.digest_title
+        LOG_LEVEL            = var.log_level
       },
       var.lambda_environment_variables
     )
@@ -259,28 +272,4 @@ resource "aws_scheduler_schedule" "this" {
   }
 
   depends_on = [aws_iam_role_policy.scheduler]
-}
-
-resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
-  count = var.enable_error_alarm ? 1 : 0
-
-  alarm_name          = "${local.function_name}-errors"
-  alarm_description   = "Triggers when the tech news Lambda reports one or more errors."
-  comparison_operator = "GreaterThanOrEqualToThreshold"
-  evaluation_periods  = 1
-  metric_name         = "Errors"
-  namespace           = "AWS/Lambda"
-  period              = 300
-  statistic           = "Sum"
-  threshold           = 1
-  treat_missing_data  = "notBreaching"
-
-  dimensions = {
-    FunctionName = aws_lambda_function.this.function_name
-  }
-
-  alarm_actions = var.alarm_sns_topic_arns
-  ok_actions    = var.alarm_sns_topic_arns
-
-  tags = local.common_tags
 }

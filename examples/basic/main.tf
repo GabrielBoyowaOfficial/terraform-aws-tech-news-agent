@@ -9,28 +9,48 @@ terraform {
   }
 }
 
+variable "aws_region" {
+  description = "AWS region in which to deploy the example."
+  type        = string
+}
+
+variable "bedrock_model_id" {
+  description = "Bedrock model ID or inference profile ID to invoke."
+  type        = string
+}
+
+variable "bedrock_model_arns" {
+  description = "Bedrock model and/or inference profile ARNs permitted for invocation."
+  type        = list(string)
+}
+
+variable "content_sources" {
+  description = "RSS or Atom sources to include in the digest."
+  type = list(object({
+    name = string
+    url  = string
+    kind = optional(string, "feed")
+  }))
+}
+
 provider "aws" {
-  region = "us-east-2"
+  region = var.aws_region
 }
 
 module "tech_news_agent" {
   source = "../../"
 
-  name                = "tech-news"
-  lambda_package_path = "${path.module}/lambda.zip"
+  name = "tech-news"
 
-  bedrock_model_id = "replace-with-bedrock-model-or-inference-profile-id"
-  bedrock_model_arns = [
-    "arn:aws:bedrock:us-east-2:123456789012:inference-profile/replace-me"
-  ]
+  bedrock_model_id   = var.bedrock_model_id
+  bedrock_model_arns = var.bedrock_model_arns
+  content_sources    = var.content_sources
 
-  news_sources = [
-    "https://example.com/technology/rss",
-    "https://example.org/security/feed"
-  ]
+  # Uses the bundled reference Lambda implementation by default.
+  # Override lambda_package_path if you want to supply your own ZIP.
 
   schedule_expression = "cron(30 8 * * ? *)"
-  schedule_timezone   = "America/Toronto"
+  schedule_timezone   = "Etc/UTC"
 
   tags = {
     Environment = "example"
