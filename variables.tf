@@ -5,8 +5,9 @@ variable "name" {
 }
 
 variable "lambda_package_path" {
-  description = "Path to the pre-built Lambda deployment ZIP."
+  description = "Optional path to a pre-built Lambda ZIP. When null, the bundled src directory is packaged automatically."
   type        = string
+  default     = null
 }
 
 variable "lambda_handler" {
@@ -41,7 +42,7 @@ variable "lambda_description" {
 variable "lambda_memory_size" {
   description = "Lambda memory in MB."
   type        = number
-  default     = 512
+  default     = 256
 }
 
 variable "lambda_timeout_seconds" {
@@ -62,10 +63,67 @@ variable "lambda_environment_variables" {
   default     = {}
 }
 
-variable "news_sources" {
-  description = "Generic list of content source URLs consumed by the Lambda code. Avoid committing proprietary/private source URLs to a public repository."
-  type        = list(string)
-  default     = []
+variable "content_sources" {
+  description = "RSS or Atom sources consumed by the reference Lambda. Use only sources you are permitted to consume."
+  type = list(object({
+    name = string
+    url  = string
+    kind = optional(string, "feed")
+  }))
+  default = []
+
+  validation {
+    condition = alltrue([
+      for source in var.content_sources :
+      length(trimspace(source.name)) > 0 && can(regex("^https://", source.url))
+    ])
+    error_message = "Each content source must have a non-empty name and an HTTPS URL."
+  }
+}
+
+variable "interests" {
+  description = "High-level topics used by the model when ranking and curating candidate stories."
+  type        = string
+  default     = "cloud computing, cybersecurity, software engineering, artificial intelligence, and emerging technology"
+}
+
+variable "top_n" {
+  description = "Maximum number of stories the model should select for a digest."
+  type        = number
+  default     = 10
+
+  validation {
+    condition     = var.top_n >= 1 && var.top_n <= 25
+    error_message = "top_n must be between 1 and 25."
+  }
+}
+
+variable "lookback_hours" {
+  description = "Only consider feed items published within this many hours of execution."
+  type        = number
+  default     = 24
+
+  validation {
+    condition     = var.lookback_hours >= 1 && var.lookback_hours <= 168
+    error_message = "lookback_hours must be between 1 and 168."
+  }
+}
+
+variable "dedupe_ttl_days" {
+  description = "How many days article fingerprints remain in DynamoDB before TTL expiry."
+  type        = number
+  default     = 14
+
+  validation {
+    condition     = var.dedupe_ttl_days >= 1
+    error_message = "dedupe_ttl_days must be at least 1."
+  }
+}
+
+variable "digest_title" {
+  description = "Title used at the top of the Slack digest."
+  type        = string
+  default     = "Tech brief"
 }
 
 variable "bedrock_model_id" {
@@ -101,7 +159,7 @@ variable "slack_secret_arn" {
   default     = null
 }
 
-variable "secret_kms_key_id" {
+variable "secret_kms_key_arn" {
   description = "Optional customer-managed KMS key ARN used by the Slack secret."
   type        = string
   default     = null
@@ -111,12 +169,6 @@ variable "secret_recovery_window_days" {
   description = "Secrets Manager recovery window in days."
   type        = number
   default     = 7
-}
-
-variable "dedupe_ttl_seconds" {
-  description = "How long article fingerprints should remain in DynamoDB before TTL expiry."
-  type        = number
-  default     = 604800
 }
 
 variable "enable_dynamodb_pitr" {
@@ -134,7 +186,7 @@ variable "schedule_expression" {
 variable "schedule_timezone" {
   description = "IANA timezone used to evaluate the schedule."
   type        = string
-  default     = "America/Toronto"
+  default     = "Etc/UTC"
 }
 
 variable "schedule_enabled" {
@@ -146,7 +198,7 @@ variable "schedule_enabled" {
 variable "schedule_description" {
   description = "Description assigned to the EventBridge Scheduler schedule."
   type        = string
-  default     = "Runs the tech news AI agent each morning."
+  default     = "Runs the tech news AI agent on a recurring schedule."
 }
 
 variable "schedule_max_event_age_seconds" {
@@ -177,18 +229,11 @@ variable "log_level" {
   description = "Application log level passed to the Lambda function."
   type        = string
   default     = "INFO"
-}
 
-variable "enable_error_alarm" {
-  description = "Create a CloudWatch alarm when the Lambda reports errors."
-  type        = bool
-  default     = true
-}
-
-variable "alarm_sns_topic_arns" {
-  description = "Optional SNS topic ARNs for CloudWatch alarm notifications."
-  type        = list(string)
-  default     = []
+  validation {
+    condition     = contains(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], upper(var.log_level))
+    error_message = "log_level must be DEBUG, INFO, WARNING, ERROR, or CRITICAL."
+  }
 }
 
 variable "additional_lambda_policy_statements" {
